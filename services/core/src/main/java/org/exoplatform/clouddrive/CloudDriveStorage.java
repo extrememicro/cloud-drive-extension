@@ -18,6 +18,10 @@
  */
 package org.exoplatform.clouddrive;
 
+import org.exoplatform.clouddrive.CloudDrive.Command;
+
+import java.util.concurrent.ExecutionException;
+
 import javax.jcr.Node;
 import javax.jcr.RepositoryException;
 
@@ -58,7 +62,10 @@ public interface CloudDriveStorage {
    * @throws NotCloudDriveException if given node doesn't belong to cloud drive
    * @throws NotCloudFileException if given node is a root folder of the drive
    */
-  boolean isIgnored(Node node) throws RepositoryException, NotCloudDriveException, NotCloudFileException, DriveRemovedException;
+  boolean isIgnored(Node node) throws RepositoryException,
+                              NotCloudDriveException,
+                              NotCloudFileException,
+                              DriveRemovedException;
 
   /**
    * Mark given file node as ignored. This operation doesn't remove local or remote file. This operation
@@ -105,7 +112,7 @@ public interface CloudDriveStorage {
    * @param node {@link Node} a node under cloud drive folder
    * @return boolean, <code>true</code> if file creation initiated successfully, <code>false</code> if node
    *         already represents a cloud file
-   * @throws RepositoryException if storage error occured
+   * @throws RepositoryException if storage error occurred
    * @throws NotCloudDriveException if node doesn't belong to cloud drive folder
    * @throws DriveRemovedException if drive removed
    * @throws NotCloudFileException if given node is a root folder of the drive
@@ -119,4 +126,24 @@ public interface CloudDriveStorage {
                            NotCloudFileException,
                            CloudDriveException;
 
+  /**
+   * Currently processing {@link Command} in the drive. It can be connect or synchronization operation or
+   * an empty command if nothing active in the moment. This method result changes in time. Its main purpose
+   * for precise concurrency organization. E.g. when some file change is currently updating (synchronizing)
+   * and need wait for the processing in the drive and then continue the work. Use {@link Command#isDone()}
+   * method to consult if operation completed or {@link Command#await()} to wait its completion.
+   * 
+   * @return {@link Command}
+   */
+  Command getCurentCommand();
+
+  /**
+   * Wait for currently processing drive operations. This method doesn't provide accurate state when finished
+   * as a new command can be started asynchronously at that moment. Use it for information purpose and in
+   * tests (when all commands controllable).
+   * 
+   * @throws InterruptedException if waiting thread was interrupted
+   * @throws ExecutionException if some command failed
+   */
+  void await() throws InterruptedException, ExecutionException;
 }

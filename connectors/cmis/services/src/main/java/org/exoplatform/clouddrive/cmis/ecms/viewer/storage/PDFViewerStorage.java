@@ -19,7 +19,9 @@
 package org.exoplatform.clouddrive.cmis.ecms.viewer.storage;
 
 import org.artofsolving.jodconverter.office.OfficeException;
+import org.exoplatform.clouddrive.BaseCloudDriveListener;
 import org.exoplatform.clouddrive.CloudDrive;
+import org.exoplatform.clouddrive.CloudDriveEvent;
 import org.exoplatform.clouddrive.CloudDriveException;
 import org.exoplatform.clouddrive.CloudFile;
 import org.exoplatform.clouddrive.DriveRemovedException;
@@ -274,6 +276,8 @@ public class PDFViewerStorage {
       }
     }
 
+    protected final FileKey                               key;
+
     protected final File                                  file;
 
     protected final String                                name;
@@ -288,7 +292,8 @@ public class PDFViewerStorage {
 
     protected long                                        lastAcccessed;
 
-    protected PDFFile(File file, String name, long lastModified, Document document) {
+    protected PDFFile(FileKey key, File file, String name, long lastModified, Document document) {
+      this.key = key;
       this.name = name;
       this.file = file;
       this.lastModified = lastModified;
@@ -339,6 +344,10 @@ public class PDFViewerStorage {
       return res ? file.delete() : false;
     }
 
+    public boolean exists() {
+      return file.exists();
+    }
+
     public int getNumberOfPages() {
       return numberOfPages;
     }
@@ -365,7 +374,7 @@ public class PDFViewerStorage {
      * @return the name
      */
     public String getName() {
-      return name + PDF_EXT;
+      return name;
     }
 
     public ImageFile getPageImage(int page, float rotation, float scale) throws IOException {
@@ -459,14 +468,84 @@ public class PDFViewerStorage {
     }
   }
 
-  @Deprecated
-  protected final ExoCache<FileKey, PDFFile>          cache;
+  protected class FilesCleaner extends BaseCloudDriveListener {
 
-  protected final ConcurrentHashMap<FileKey, PDFFile> spool = new ConcurrentHashMap<FileKey, PDFFile>();
+    final Map<String, PDFFile> files = new ConcurrentHashMap<String, PDFFile>();
 
-  protected final JodConverterService                 jodConverter;
+    void addFile(PDFFile file) {
+      PDFFile prev = files.put(file.getName(), file);
+      if (prev != null) {
+        prev.remove();
+      }
+    }
 
-  protected final File                                rootDir;
+    void removeFile(PDFFile file) {
+      files.remove(file.getName());
+    }
+
+    void cleanAll() {
+      for (Iterator<PDFFile> fiter = files.values().iterator(); fiter.hasNext();) {
+        PDFFile file = fiter.next();
+        if (file.remove()) {
+          spool.remove(file.key);
+          fiter.remove();
+        } else {
+          LOG.warn("Cannot remove preview file: " + file.getName());
+        }
+      }
+    }
+
+    void cleanFile(String name) {
+      PDFFile file = files.get(name);
+      if (file != null) {
+        if (file.remove()) {
+          spool.remove(file.key);
+          files.remove(name);
+        } else {
+          LOG.warn("Cannot remove preview file: " + file.getName());
+        }
+      }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void onDisconnect(CloudDriveEvent event) {
+      cleanAll();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void onRemove(CloudDriveEvent event) {
+      cleanAll();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void onSynchronized(CloudDriveEvent event) {
+      // remove changed & removed
+      for (CloudFile cfile : event.getChanged()) {
+        cleanFile(extractName(cfile.getPath()));
+      }
+      for (String rpath : event.getRemoved()) {
+        cleanFile(extractName(rpath));
+      }
+    }
+
+  }
+
+  protected final ConcurrentHashMap<FileKey, PDFFile>     spool    = new ConcurrentHashMap<FileKey, PDFFile>();
+
+  protected final JodConverterService                     jodConverter;
+
+  protected final File                                    rootDir;
+
+  protected final ConcurrentHashMap<String, FilesCleaner> cleaners = new ConcurrentHashMap<String, FilesCleaner>();
 
   /**
    * 
@@ -475,8 +554,6 @@ public class PDFViewerStorage {
     String storageName = "CloudDrive.cmis." + PDFViewerStorage.class.getSimpleName();
 
     this.jodConverter = jodConverter;
-
-    this.cache = cacheService.getCacheInstance(storageName);
 
     File probe = null;
     try {
@@ -512,12 +589,30 @@ public class PDFViewerStorage {
                                                                                                          DriveRemovedException,
                                                                                                          RepositoryException,
                                                                                                          IOException {
+    long lastModified = file.getModifiedDate().getTimeInMillis();
+
     String userId = drive.getLocalUser();
     FileKey key = new FileKey(repository, workspace, userId, drive.getTitle(), file.getId());
     PDFFile pdfFile = spool.get(key);
-    if (pdfFile == null) {
-      long lastModified = file.getModifiedDate().getTimeInMillis();
+    if (pdfFile != null) {
+      if (pdfFile.exists()) {
+        if (lastModified > pdfFile.getLastModified()) {
+          // file preview outdated in the storage - reset it and create a fresh representation
+          if (pdfFile.remove()) {
+            // null file only if it was successfully removed,
+            pdfFile = null;
+          } else {
+            // otherwise file in use and we stay use the old version
+            LOG.warn("Cannot remove PDF view of cloud file from the storage: " + file.getTitle());
+          }
+        }
+      } else {
+        spool.remove(key);
+        pdfFile = null;
+      }
+    }
 
+    if (pdfFile == null) {
       StringBuilder filePath = new StringBuilder();
       filePath.append(repository);
       filePath.append(File.separatorChar);
@@ -530,10 +625,8 @@ public class PDFViewerStorage {
 
       // file name
       StringBuilder fileName = new StringBuilder();
-      String cleanName = JCRLocalCloudDrive.cleanName(file.getTitle());
-      // max file length with a space for lastModified and page/rotation/scale suffix: all < 250
-      cleanName = cleanName.length() > MAX_FILENAME_LENGTH ? cleanName.substring(0, MAX_FILENAME_LENGTH)
-                                                          : cleanName;
+      String cleanName = extractName(file.getPath());
+
       fileName.append(cleanName);
       fileName.append('-');
       fileName.append(lastModified);
@@ -584,7 +677,11 @@ public class PDFViewerStorage {
           try {
             Document pdf = buildDocumentImage(tempStream, tempFile.getName());
             try {
-              pdfFile = new PDFFile(tempFile, cleanName, lastModified, pdf);
+              pdfFile = new PDFFile(key, tempFile, cleanName, lastModified, pdf);
+
+              // listen the drive for file removal/updates to clean the storage
+              addDriveListener(drive, pdfFile);
+
             } finally {
               pdf.dispose();
             }
@@ -771,6 +868,34 @@ public class PDFViewerStorage {
       LOG.warn("Child files not removed fully for " + dir.getAbsolutePath());
     }
     return dir.delete();
+  }
+
+  private String extractName(String nodePath) {
+    int nameIndex = nodePath.lastIndexOf("/");
+    int pathLen = nodePath.length();
+    String name;
+    if (nameIndex >= 0 && pathLen > 1 && nameIndex < pathLen - 1) {
+      name = nodePath.substring(nameIndex + 1);
+    } else {
+      name = nodePath;
+    }
+    String cleanName = JCRLocalCloudDrive.cleanName(name);
+    // max file length with a space for lastModified and page/rotation/scale suffix: all < 250
+    return cleanName.length() > MAX_FILENAME_LENGTH ? cleanName.substring(0, MAX_FILENAME_LENGTH) : cleanName;
+  }
+
+  private String previewFileName(String name) {
+    return name + PDF_EXT;
+  }
+
+  private void addDriveListener(CloudDrive drive, PDFFile file) throws DriveRemovedException,
+                                                               RepositoryException {
+    FilesCleaner cleaner = cleaners.get(drive.getPath());
+    if (cleaner == null) {
+      cleaner = new FilesCleaner();
+      drive.addListener(cleaner);
+    }
+    cleaner.addFile(file);
   }
 
 }

@@ -16,42 +16,44 @@
  * Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
  * 02110-1301 USA, or see the FSF site: http://www.fsf.org.
  */
-package org.exoplatform.clouddrive.cmis.portlet;
+package org.exoplatform.clouddrive;
 
 /**
+ * Cloud user not authorized to create, modify or remove the cloud drive resource.<br>
+ * 
  * Created by The eXo Platform SAS
  * 
  * @author <a href="mailto:pnedonosko@exoplatform.com">Peter Nedonosko</a>
- * @version $Id: CMISLoginException.java 00000 Aug 22, 2014 pnedonosko $
+ * @version $Id: UnauthorizedException.java 00000 Feb 15, 2015 pnedonosko $
  * 
  */
-public class CMISLoginException extends Exception {
+public class UnauthorizedException extends ConstraintException {
 
   /**
    * 
    */
-  private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 3047097748189249585L;
 
   /**
    * @param message
    */
-  public CMISLoginException(String message) {
+  public UnauthorizedException(String message) {
     super(message);
   }
 
   /**
-   * @param cause
-   */
-  public CMISLoginException(Throwable cause) {
-    super(cause);
-  }
-
-  /**
    * @param message
    * @param cause
    */
-  public CMISLoginException(String message, Throwable cause) {
+  public UnauthorizedException(String message, Throwable cause) {
     super(message, cause);
+  }
+
+  /**
+   * @param cause
+   */
+  public UnauthorizedException(Throwable cause) {
+    super(cause);
   }
 
 }
